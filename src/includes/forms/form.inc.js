@@ -4,31 +4,62 @@ dg.forms = {}; // A global storage for active forms.
  * Given a form id, this will return an empty placeholder for the form. It then uses a `_postRender` to dynamically
  * load and inject the form's html into the waiting placeholder container.
  * @param {Object} variables
- *  _id - The form id, e.g. UserLoginForm, MyCustomForm
+ *  _id {Number} The form id, e.g. UserLoginForm, MyCustomForm
+ *  _node {Object} Optional, attach a node to include its node id in the form context's id.
  * @returns {String}
  */
 dg.theme_form = function(variables) {
-  // Validate variables.
+  var debugPrefix = 'dg.theme_form - '; // Helps developers with broken forms.
+
+  // Validate variables and figure out the Form instance's function name.
   var msg = '';
   if (!variables._id) { msg = 'missing _id'; }
-  var factoryFunction = window[variables._id];
-  if (!factoryFunction) { msg = 'form id not found: ' + variables._id; }
-  if (msg != '') { console.log('dg.theme_form - ' + msg); return ''; }
+  var factoryFunctionName = variables._id;
+  var factoryFunction = window[factoryFunctionName];
+  if (!factoryFunction) { msg = 'form id not found: ' + factoryFunctionName; }
+  if (msg != '') { console.log(debugPrefix + msg); return ''; }
 
-  // Add an empty div for the form's wrapper, then use a post render to load and inject the form into the DOM.
-  var formDomId = dg.killCamelCase(variables._id, '-');
-  variables._attributes.id = 'form-wrapper-' + formDomId;
+  // Figure out an id for the form's wrapper div. If a node is attached to the form, use its node id for additional
+  // context on the wrapper div's id. This helps one form power many nodes (e.g. webforms).
+  var formWrapperIdSuffix = dg.killCamelCase(factoryFunctionName, '-');
+  variables._attributes.id = 'form-wrapper-' + formWrapperIdSuffix;
+  if (variables._node) { variables._attributes.id += '-' + variables._node.nid; }
+  var formWrapperId = variables._attributes.id;
+
+  // Render the empty wrapper for the form, then use a post render to load and inject the form into the DOM.
   return dg.render({
-    _markup: '<div ' + dg.attributes(variables._attributes) + '></div>',
+    _markup: '<div ' + dg.attrs(variables) + '></div>',
     _postRender: [function() {
-      var formObj = dg.addForm(variables._id, dg.applyToConstructor(factoryFunction));
+
+      // Assemble the Form instance.
+      var formObj = dg.addForm(factoryFunctionName, dg.applyToConstructor(factoryFunction));
+
+      // WARNING: don't do any customizations between the addForm() and getForm() calls here, put any extra stuff into
+      // getForm() so it's picked up by any usage of dg.theme_form() too.
+
+      // Get the form's html.
       formObj.getForm(variables).then(function(html) {
-        document.getElementById(variables._attributes.id).innerHTML = html;
-        if (dg.formHasActions(formObj.form)) { dg.formAttachSubmissionHandler(formDomId); }
+
+        // Extract the form object.
+        var form = formObj.form;
+
+        // Set the form's html in the DOM.
+        var formWrapper = dg.qs('#' + formWrapperId);
+        if (formWrapper) { formWrapper.innerHTML = html; }
+        else { console.log(debugPrefix + 'form wrapper missing: ' + formWrapperId); return; }
+
+        // If the form has actions, attach submission handlers.
+        if (dg.formHasActions(form)) {
+          dg.formAttachSubmissionHandler(form._attributes.id);
+        }
+
+        // Run any post renders for good luck.
         dg.runPostRenders();
+
       });
     }]
   });
+
 };
 
 /**
@@ -36,7 +67,9 @@ dg.theme_form = function(variables) {
  * @param {String} formId
  * @returns {string}
  */
-dg.formDomIdFromId = function(formId) { return dg.killCamelCase(formId, '-').toLowerCase(); };
+dg.formDomIdFromId = function(formId) {
+  return dg.killCamelCase(formId, '-').toLowerCase();
+};
 
 /**
  * The Form prototype.
@@ -86,7 +119,9 @@ dg.Form.prototype.getFormId = function() { return this.get('id'); };
  * Returns the form's id to be used in the DOM.
  * @returns {String}
  */
-dg.Form.prototype.getFormDomId = function() { return dg.formDomIdFromId(this.getFormId()); };
+dg.Form.prototype.getFormDomId = function() {
+  return this.form._attributes.id;
+};
 
 /**
  * Returns the html output for a form, via a Promise.
@@ -99,14 +134,19 @@ dg.Form.prototype.getForm = function() {
   return new Promise(function(ok, err) {
     var done = function() {
 
+      // Attach the factory function name (aka the original form id) to the form's attributes, that way in the submit
+      // handler we have easy access to the original factory function name in case the developer attached a node context
+      // to the form.
+      self.form._attributes['data-id'] = self.id;
+
       // Set up default values across each element.
       // @TODO this should be the FormElementPrepare prototype, or combination of.
-      for (name in self.form) {
+      for (var name in self.form) {
         if (!dg.isFormElement(name, self.form)) { continue; }
         var el = self.form[name];
         if (el._type == 'actions') {
           dg.setFormElementDefaults(name, el);
-          for (_name in el) {
+          for (var _name in el) {
             if (!dg.isFormElement(_name, el)) { continue; }
             dg.setFormElementDefaults(_name, el[_name]);
           }
@@ -288,30 +328,53 @@ dg.Form.prototype.submitForm = function(form, form_state, options) {
   });
 };
 
+/**
+ * Submits the form.
+ */
+dg.Form.prototype.submit = function() {
+  return this._submission();
+};
+
 // dg core form UX submission handler
 dg.Form.prototype._submission = function() {
   var self = this;
   self.disableSubmitButton();
+
   return new Promise(function(ok, err) {
+
+    // Get the form state controller, and have it set the actual form state...
     var formState = self.getFormState();
     formState.setFormState().then(function() {
+
+      // Clear any previous errors.
       formState.clearErrors();
+
+      // Validate the form...
       self._validateForm().then(function() {
+
+        // If there are any errors, enable the submit button and show the errors.
         if (formState.hasAnyErrors()) {
           self.enableSubmitButton();
           formState.displayErrors();
           err();
           return;
         }
+
+        // Form state is valid, run the form's submission handler...
         self._submitForm(self, formState).then(function() {
+
+          // Figure out our destination, or fallback to the form action, if any.
           var destination = dg._GET('destination') ? dg._GET('destination') : null;
           if (!destination && self.form._action) { destination = self.form._action; }
+
+          // If there was a destination specified, go there (keep in mind the router will then remove the form from
+          // dg.forms upon route change) and then resolve. Otherwise just resolve (which leaves the dg.forms entry in
+          // place).
           if (destination) { dg.goto(destination); }
-          //dg.removeForm(self.getFormId());
           ok();
-        }).catch(function() {
-          self.enableSubmitButton();
-        });
+
+        }).catch(function() { self.enableSubmitButton(); });
+
       });
     });
   });
@@ -324,7 +387,7 @@ dg.Form.prototype._validateForm = function() {
 
   // Prepare to handle any validation errors.
   var setError = function(name) {
-    formState.setErrorByName(name, dg.t('The "' + name + '" field is required'));
+    formState.setErrorByName(name, dg.t('The @name field is required.', { '@name': name }));
   };
 
   // Verify required elements have values. Keep in mind that most (if not all) form elements have been wrapped in a
@@ -386,20 +449,27 @@ dg.Form.prototype._submitForm = function() {
 };
 
 dg.Form.prototype.getSubmitButtonSelector = function() {
-  return '#' + dg.killCamelCase(this.getFormId()) + ' #' + dg.formSubmitButtonId(this);
+  return '#' + this.getFormDomId() + ' #' + dg.formSubmitButtonId(this);
+};
+
+dg.Form.prototype.getSubmitButton = function() {
+  return dg.qs(this.getSubmitButtonSelector());
 };
 
 /**
  * Disables the submit button on the form.
  */
 dg.Form.prototype.enableSubmitButton = function() {
-  document.querySelector(this.getSubmitButtonSelector()).disabled = false;
+  var btn = this.getSubmitButton();
+  if (btn) { btn.disabled = false; }
 };
+
 /**
  * Enables the submit button on the form.
  */
 dg.Form.prototype.disableSubmitButton = function() {
-  document.querySelector(this.getSubmitButtonSelector()).disabled = true;
+  var btn = this.getSubmitButton();
+  if (btn) { dg.qs(btn).disabled = true; }
 };
 
 /**
@@ -436,8 +506,8 @@ dg.createForm = function(formId, form) {
 };
 
 dg.addForm = function(id, form) {
-  this.forms[id] = form;
-  return this.forms[id];
+  dg.forms[id] = form;
+  return dg.forms[id];
 };
 
 /**
@@ -452,11 +522,11 @@ dg.formExists = function(id) { return jDrupal.functionExists(id); };
  * @param id
  * @returns {Form|null}
  */
-dg.loadForm = function(id) { return this.forms[id] ? this.forms[id] : null; };
+dg.loadForm = function(id) { return dg.forms[id] ? dg.forms[id] : null; };
 
-dg.loadForms = function() { return this.forms; };
-dg.removeForm = function(id) { delete this.forms[id]; };
-dg.removeForms = function() { this.forms = {}; };
+dg.loadForms = function() { return dg.forms; };
+dg.removeForm = function(id) { delete dg.forms[id]; };
+dg.removeForms = function() { dg.forms = {}; };
 
 /**
  * Given a form, this will return true if it has an 'actions' element, false otherwise.
@@ -487,15 +557,17 @@ dg.formHasActions = function(form) {
  * function waits until submission then invokes DrupalGap's core form validation and submission system.
  */
 dg.formAttachSubmissionHandler = function(id) {
-  var form_html_id = dg.killCamelCase(id, '-');
-  var form = document.getElementById(form_html_id);
-  if (!form) { return false; }
+  var form = dg.qs('#' + id);
+  if (!form) {
+    //console.log('formAttachSubmissionHandler - failed to find form in DOM: ' + id);
+    // @TODO why does this moment cause all the submission values to get set into the URL query string?
+    return false;
+  }
   function processForm(e) {
-    // @TODO if any developer has a JS error during form submission, form state values are
-    // placed into the url for all to see, yikes, wtf.
     if (e.preventDefault) e.preventDefault();
-    var _form = dg.loadForm(jDrupal.ucfirst(dg.getCamelCase(this.id)));
-    _form._submission().then(
+    var factoryFunctionName = form.getAttribute('data-id');
+    var _form = dg.loadForm(factoryFunctionName);
+    _form.submit().then(
         function() { },
         function() { }
     );
@@ -516,9 +588,9 @@ dg.loadFormFromInterface = function(form) {
 };
 
 /**
- * Given a form element name and a form, this will return true if an element on the form exists that matches the
- * given name, false otherwise.
- * @param name {Object}
+ * Given a form element name and a form, this will return true if an element on the form exists that matches the given
+ * name, false otherwise.
+ * @param name {*}
  * @param form {Object}
  * @returns {boolean}
  */
@@ -526,9 +598,17 @@ dg.isFormElement = function(name, form) {
   return typeof form == 'object' && form.hasOwnProperty(name) && name.charAt(0) != '_';
 };
 
-dg.isFormProperty = function(prop, obj) {
-  return obj.hasOwnProperty(prop) && prop.charAt(0) == '_';
+/**
+ * Given a form element name and a form, this will return true if an property on the form exists that matches the given
+ * name, false otherwise.
+ * @param name {*}
+ * @param form {Object}
+ * @returns {boolean}
+ */
+dg.isFormProperty = function(name, form) {
+  return form.hasOwnProperty(name) && name.charAt(0) == '_';
 };
+
 dg.setFormElementDefaults = function(name, el) {
   var attrs = el._attributes ? el._attributes : {};
   if (!attrs.id) { attrs.id = dg.formElementDomIdFromName(name); }

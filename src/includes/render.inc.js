@@ -70,7 +70,7 @@ dg.appRender = function(content) {
 
         // If all the blocks in the region are hidden, remove the empty region from the DOM and add a css class to the
         // body to indicate the region isn't present
-        if (_region.getBlocks().length == region.getHiddenBlocks().length) {
+        if (_region.getBlocks().length == _region.getHiddenBlocks().length) {
           var _regionId = _region.get('id');
           dg.removeElement(dg.cleanCssIdentifier(_regionId));
           dg.addBodyClass('no-' + _regionId);
@@ -92,7 +92,7 @@ dg.appRender = function(content) {
           var forms = dg.loadForms();
           for (var id in forms) {
             if (!forms.hasOwnProperty(id)) { continue; }
-            dg.formAttachSubmissionHandler(id);
+            dg.formAttachSubmissionHandler(forms[id].getFormDomId());
           }
 
         }
@@ -204,7 +204,7 @@ dg.render = function(content, runPostRender) {
     // overwritten with the rendered content after the attachment(s) resolve.
     var hasAttachments = dg.hasAttachments(content);
     if (hasAttachments) {
-      var randomId = jDrupal.userPassword();
+      var randomId = dg.salt();
       var targetId = 'lib-' + randomId;
       var format = content._format ? content._format : 'div';
       return dg.render({

@@ -28,7 +28,7 @@ dg.setMode = function(mode) { this.config('mode', mode); };
  * @return {Boolean}
  */
 dg.isCompiled = function() {
-  jDrupal.inArray(dg.getMode(), ['phonegap', 'cordova'])
+  return dg.inArray(dg.getMode(), ['phonegap', 'cordova']);
 };
 
 /**
@@ -37,6 +37,17 @@ dg.isCompiled = function() {
  */
 dg.platform = function() {
   return dg.isCompiled() ? device.platform.toLowerCase() : 'web';
+};
+
+/**
+ * Returns true if the device has a connection, false otherwise.
+ * @see https://github.com/apache/cordova-plugin-network-information
+ * @returns {boolean}
+ */
+dg.hasConnection = function() {
+  return dg.isCompiled() ?
+    navigator.connection.type != Connection.NONE :
+    true; // Assume web-apps always have connection, for now.
 };
 
 /**
@@ -162,6 +173,15 @@ dg.isProperty = function(prop, obj) {
   return obj.hasOwnProperty(prop) && prop.charAt(0) == '_';
 };
 
+dg.removeFromArray = function(needle, haystack) {
+  for (var i = haystack.length - 1; i >= 0; i--) {
+    if (haystack[i] === needle) {
+      haystack.splice(i, 1);
+      break;
+    }
+  }
+};
+
 /**
  * Sets the current page title.
  * @param {String} title The title to set.
@@ -194,6 +214,7 @@ dg.setDocumentTitle = function(title) {
 
 dg.setPageTitle = function(title) {
   // @TODO this is wrong, we need to run it through the block render layer so hook alterations can be applied.
+  // @TODO we now have some handy functions for refreshing a block, use them to solve the issue mentioned above.
   var titleDiv = document.getElementById('title');
   if (titleDiv) { titleDiv.innerHTML = typeof title === 'string' ?
       dg.theme('title', { _title: title }) : dg.render(title); }
@@ -245,7 +266,7 @@ dg.attributes = function(attributes) {
 };
 
 /**
- *
+ * Given a render element, this will initialize the _attributes object for it.
  * @param element {Object} A typical render element or widget.
  */
 dg.attributesInit = function(element) {
@@ -324,7 +345,9 @@ dg.getCamelCase = function(str) {
 dg.extend = function(obj1, obj2) {
   for (var name in obj2) {
     if (!obj2.hasOwnProperty(name)) { continue; }
-    obj1[name] = obj2[name];
+    var val = obj2[name];
+    if (!jDrupal.isEmpty(val)) { obj1[name] = val; }
+
   }
   return obj1;
 };
@@ -406,8 +429,8 @@ dg.bl = function(text, path, options) { return this.l.apply(this, arguments); };
  * @param id
  */
 dg.removeElement = function(id) {
-  var elem = document.getElementById(id);
-  elem.parentElement.removeChild(elem);
+  var el = dg.qs('#' + id);
+  if (el) { el.parentElement.removeChild(el); }
 };
 
 /**
